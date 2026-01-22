@@ -10,33 +10,33 @@ export const DEFAULT_CONFIG: Config = {
   port: 9001,
   lmstudio: {
     baseUrl: 'http://localhost:1234/v1',
-    model: 'local-model',
+    model: 'qwen2.5-coder-32b-instruct',
     modelRouting: {
-      // Claude 4 models
-      'claude-opus-4': 'local-model',
-      'claude-sonnet-4': 'local-model',
-      // Claude 3.5 models
-      'claude-3-5-sonnet': 'local-model',
-      'claude-3-5-haiku': 'local-model',
+      // Claude 4 models - complex reasoning, agentic tasks
+      'claude-opus-4': 'qwen2.5-coder-32b-instruct',
+      'claude-sonnet-4': 'qwen2.5-coder-32b-instruct',
+      // Claude 3.5 models - coding focused
+      'claude-3-5-sonnet': 'deepseek-coder-v2-lite-instruct',
+      'claude-3-5-haiku': 'qwen2.5-coder-7b-instruct',
       // Claude 3 models
-      'claude-3-opus': 'local-model',
-      'claude-3-sonnet': 'local-model',
-      'claude-3-haiku': 'local-model',
+      'claude-3-opus': 'qwen2.5-coder-32b-instruct',
+      'claude-3-sonnet': 'deepseek-coder-v2-lite-instruct',
+      'claude-3-haiku': 'qwen2.5-coder-7b-instruct',
     },
   },
   ollama: {
     baseUrl: 'http://localhost:11434/v1',
-    model: 'llama3:8b',
+    model: 'qwen2.5:32b',
     modelRouting: {
-      // Claude 4 models - map to best available
-      'claude-opus-4': 'llama3:70b',
-      'claude-sonnet-4': 'llama3:8b',
-      // Claude 3.5 models
-      'claude-3-5-sonnet': 'llama3:8b',
-      'claude-3-5-haiku': 'phi3:mini',
+      // Claude 4 models - need largest models for complex reasoning
+      'claude-opus-4': 'qwen2.5:72b',
+      'claude-sonnet-4': 'qwen2.5:32b',
+      // Claude 3.5 models - coding focused
+      'claude-3-5-sonnet': 'deepseek-coder:33b',
+      'claude-3-5-haiku': 'qwen2.5:7b',
       // Claude 3 models
       'claude-3-opus': 'llama3:70b',
-      'claude-3-sonnet': 'llama3:8b',
+      'claude-3-sonnet': 'qwen2.5:14b',
       'claude-3-haiku': 'phi3:mini',
     },
   },
