@@ -3,6 +3,7 @@ import { ClaudeRequest, ClaudeResponse, OpenAIResponse, OpenAIStreamChunk, OpenA
 import { Response } from 'express';
 import * as http from 'http';
 import * as https from 'https';
+import chalk from 'chalk';
 
 interface StreamingToolCall {
   id: string;
@@ -10,22 +11,102 @@ interface StreamingToolCall {
   arguments: string;
 }
 
+interface LMStudioModel {
+  id: string;
+  object: string;
+}
+
 export class LMStudioProvider extends BaseProvider {
   constructor(config: ProviderConfig) {
     super(config);
+  }
+
+  // Check if LM Studio is running and get loaded models
+  async getLoadedModels(): Promise<string[]> {
+    try {
+      const url = new URL(this.config.baseUrl);
+      const response = await fetch(`${url.origin}${url.pathname}/models`.replace('//', '/'));
+      if (!response.ok) return [];
+
+      const data = await response.json() as { data: LMStudioModel[] };
+      return data.data?.map(m => m.id) || [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Check if LM Studio server is running
+  async isServerRunning(): Promise<boolean> {
+    try {
+      const url = new URL(this.config.baseUrl);
+      const response = await fetch(`${url.origin}${url.pathname}/models`.replace('//', '/'));
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  // Provide helpful error message for LM Studio
+  private async getHelpfulError(error: Error): Promise<Error> {
+    const modelName = this.getEffectiveModel();
+
+    // Check if server is running
+    const serverRunning = await this.isServerRunning();
+    if (!serverRunning) {
+      console.log(chalk.red('\n  LM Studio server is not running!'));
+      console.log(chalk.yellow('  Please:'));
+      console.log(chalk.white('    1. Open LM Studio'));
+      console.log(chalk.white('    2. Load a model'));
+      console.log(chalk.white('    3. Start the local server (Developer tab)\n'));
+      return new Error(`LM Studio server not running at ${this.config.baseUrl}. Please start LM Studio and load a model.`);
+    }
+
+    // Check loaded models
+    const loadedModels = await this.getLoadedModels();
+    if (loadedModels.length === 0) {
+      console.log(chalk.red('\n  No model loaded in LM Studio!'));
+      console.log(chalk.yellow('  Please load a model in LM Studio:'));
+      console.log(chalk.white(`    Requested: ${modelName}`));
+      console.log(chalk.white('    Go to LM Studio > Select a model > Load\n'));
+      return new Error(`No model loaded in LM Studio. Please load "${modelName}" or another model.`);
+    }
+
+    // Model mismatch
+    if (!loadedModels.some(m => m.toLowerCase().includes(modelName.toLowerCase().split('/').pop() || ''))) {
+      console.log(chalk.yellow('\n  Model mismatch in LM Studio'));
+      console.log(chalk.white(`    Requested: ${modelName}`));
+      console.log(chalk.white(`    Loaded:    ${loadedModels.join(', ')}`));
+      console.log(chalk.gray('    (Request will use the loaded model)\n'));
+    }
+
+    return error;
   }
 
   async complete(request: ClaudeRequest): Promise<ClaudeResponse> {
     const openAIRequest = this.convertClaudeToOpenAI(request);
     openAIRequest.stream = false;
 
-    const response = await this.makeRequest('/chat/completions', openAIRequest);
-    return this.convertOpenAIToClaude(response as OpenAIResponse, request.model);
+    try {
+      const response = await this.makeRequest('/chat/completions', openAIRequest);
+      return this.convertOpenAIToClaude(response as OpenAIResponse, request.model);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw await this.getHelpfulError(error);
+      }
+      throw error;
+    }
   }
 
   async stream(request: ClaudeRequest, res: Response): Promise<void> {
     const openAIRequest = this.convertClaudeToOpenAI(request);
     openAIRequest.stream = true;
+
+    // Pre-check if LM Studio is running
+    const serverRunning = await this.isServerRunning();
+    if (!serverRunning) {
+      const error = await this.getHelpfulError(new Error('Server not running'));
+      throw error;
+    }
 
     const url = new URL(this.config.baseUrl);
     const isHttps = url.protocol === 'https:';

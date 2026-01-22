@@ -3,6 +3,7 @@ import { ClaudeRequest, ClaudeResponse, OpenAIResponse, OpenAIStreamChunk, OpenA
 import { Response } from 'express';
 import * as http from 'http';
 import * as https from 'https';
+import chalk from 'chalk';
 
 interface StreamingToolCall {
   id: string;
@@ -10,22 +11,159 @@ interface StreamingToolCall {
   arguments: string;
 }
 
+interface OllamaModel {
+  name: string;
+  modified_at: string;
+  size: number;
+}
+
+interface OllamaTagsResponse {
+  models: OllamaModel[];
+}
+
 export class OllamaProvider extends BaseProvider {
+  private modelLoadAttempted: Set<string> = new Set();
+
   constructor(config: ProviderConfig) {
     super(config);
+  }
+
+  // Get Ollama native API base URL (without /v1)
+  private getOllamaApiBase(): string {
+    const url = new URL(this.config.baseUrl);
+    // Remove /v1 suffix if present to get native Ollama API
+    const base = url.origin;
+    return base;
+  }
+
+  // Check if model is available locally
+  async isModelAvailable(modelName: string): Promise<boolean> {
+    try {
+      const base = this.getOllamaApiBase();
+      const response = await fetch(`${base}/api/tags`);
+      if (!response.ok) return false;
+
+      const data = await response.json() as OllamaTagsResponse;
+      const normalizedName = modelName.split(':')[0].toLowerCase();
+
+      return data.models.some(m => {
+        const name = m.name.split(':')[0].toLowerCase();
+        return name === normalizedName || m.name.toLowerCase() === modelName.toLowerCase();
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  // Pull/download a model
+  async pullModel(modelName: string): Promise<boolean> {
+    console.log(chalk.yellow(`  Pulling model ${modelName}...`));
+
+    try {
+      const base = this.getOllamaApiBase();
+      const response = await fetch(`${base}/api/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: modelName, stream: false }),
+      });
+
+      if (response.ok) {
+        console.log(chalk.green(`  Model ${modelName} pulled successfully`));
+        return true;
+      } else {
+        const text = await response.text();
+        console.log(chalk.red(`  Failed to pull model: ${text}`));
+        return false;
+      }
+    } catch (error) {
+      console.log(chalk.red(`  Error pulling model: ${error}`));
+      return false;
+    }
+  }
+
+  // Load/warm up a model by sending a minimal request
+  async loadModel(modelName: string): Promise<boolean> {
+    console.log(chalk.yellow(`  Loading model ${modelName}...`));
+
+    try {
+      const base = this.getOllamaApiBase();
+      const response = await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelName,
+          prompt: '',
+          stream: false,
+        }),
+      });
+
+      if (response.ok) {
+        console.log(chalk.green(`  Model ${modelName} loaded successfully`));
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Ensure model is available and loaded
+  async ensureModelReady(modelName: string): Promise<void> {
+    // Prevent infinite loops
+    if (this.modelLoadAttempted.has(modelName)) {
+      return;
+    }
+    this.modelLoadAttempted.add(modelName);
+
+    const isAvailable = await this.isModelAvailable(modelName);
+
+    if (!isAvailable) {
+      console.log(chalk.yellow(`  Model ${modelName} not found locally`));
+      const pulled = await this.pullModel(modelName);
+      if (!pulled) {
+        throw new Error(`Failed to pull model ${modelName}. Please run: ollama pull ${modelName}`);
+      }
+    }
+
+    // Load the model to warm it up
+    await this.loadModel(modelName);
   }
 
   async complete(request: ClaudeRequest): Promise<ClaudeResponse> {
     const openAIRequest = this.convertClaudeToOpenAI(request);
     openAIRequest.stream = false;
 
-    const response = await this.makeRequest('/chat/completions', openAIRequest);
-    return this.convertOpenAIToClaude(response as OpenAIResponse, request.model);
+    try {
+      const response = await this.makeRequest('/chat/completions', openAIRequest);
+      return this.convertOpenAIToClaude(response as OpenAIResponse, request.model);
+    } catch (error) {
+      // If request failed, try to ensure model is ready and retry
+      const modelName = this.getEffectiveModel();
+      if (error instanceof Error && (
+        error.message.includes('model') ||
+        error.message.includes('not found') ||
+        error.message.includes('404') ||
+        error.message.includes('ECONNREFUSED')
+      )) {
+        await this.ensureModelReady(modelName);
+        // Retry the request
+        const response = await this.makeRequest('/chat/completions', openAIRequest);
+        return this.convertOpenAIToClaude(response as OpenAIResponse, request.model);
+      }
+      throw error;
+    }
   }
 
   async stream(request: ClaudeRequest, res: Response): Promise<void> {
     const openAIRequest = this.convertClaudeToOpenAI(request);
     openAIRequest.stream = true;
+
+    // Pre-check if model is available for streaming
+    const modelName = this.getEffectiveModel();
+    const isAvailable = await this.isModelAvailable(modelName);
+    if (!isAvailable) {
+      await this.ensureModelReady(modelName);
+    }
 
     const url = new URL(this.config.baseUrl);
     const isHttps = url.protocol === 'https:';
